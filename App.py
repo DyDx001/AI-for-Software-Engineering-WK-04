@@ -1,92 +1,43 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-#from sklearn.datasets import load_breast_cancer
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import classification_report, confusion_matrix
+# Import our new "backend" functions from model.py
+from model import load_and_prep_data, train_model
 
 # Set page config
 st.set_page_config(page_title="Predictive Priority AI", layout="wide")
 
-# --- 1. Data Loading and Preprocessing ---
-# We cache the data loading to speed up the app.
+# --- 1. Load and Train Model (using cached functions) ---
+# We wrap our imported functions in Streamlit's cache decorators
 @st.cache_data
-def load_and_prep_data():
-    """
-    Loads breast cancer data, engineers the 'priority' target,
-    and returns processed X and y.
-    """
-    cancer = load_breast_cancer()
-    X = pd.DataFrame(cancer.data, columns=cancer.feature_names)
-    
-    # --- Target Engineering ---
-    # Create the 'priority' (high/medium/low) target based on 'mean area'
-    y_priority = pd.qcut(X['mean area'], q=3, labels=['Low', 'Medium', 'High'])
-    
-    # --- Feature Engineering ---
-    # CRITICAL: We must drop all features directly related to the target 
-    # ('mean area', 'mean radius', 'mean perimeter') to prevent data leakage.
-    # The model should learn from texture, concavity, etc., not the proxy.
-    features_to_drop = [
-        'mean area', 'mean radius', 'mean perimeter', 
-        'area error', 'radius error', 'perimeter error',
-        'worst area', 'worst radius', 'worst perimeter'
-    ]
-    # Use .copy() to avoid SettingWithCopyWarning
-    X_final = X.drop(columns=features_to_drop).copy()
-    
-    # Encode target
-    encoder = LabelEncoder()
-    y_final_encoded = encoder.fit_transform(y_priority)
-    
-    return X_final, y_final_encoded, encoder, X_final.columns, X.mean()
+def cached_load_data():
+    return load_and_prep_data()
 
-# --- 2. Model Training ---
-# We cache the trained model to avoid retraining on every interaction.
 @st.cache_resource
-def train_model(X, y):
-    """
-    Splits, scales, and trains a Random Forest model.
-    """
-    # Split the data
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    
-    # Scale the feature data
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    
-    # Train the model
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X_train_scaled, y_train)
-    
-    # Make predictions
-    y_pred = model.predict(X_test_scaled)
-    
-    return model, scaler, X_test_scaled, y_test, y_pred
+def cached_train_model(X, y):
+    return train_model(X, y)
 
-# --- 3. Streamlit UI ---
+# Run the functions
+X_final, y_final_encoded, encoder, feature_names, base_data_mean = cached_load_data()
+model, scaler, X_test_scaled, y_test, y_pred = cached_train_model(X_final, y_final_encoded)
 
-# Load data and train model
-X_final, y_final_encoded, encoder, feature_names, base_data_mean = load_and_prep_data()
-model, scaler, X_test_scaled, y_test, y_pred = train_model(X_final, y_final_encoded)
+# --- 2. Streamlit UI ---
 
 # --- Header ---
 st.title("Task 3: Predictive Analytics for Resource Allocation")
 st.write("This app trains a Random Forest model to predict 'Issue Priority' (Low, Medium, High) based on the Breast Cancer dataset.")
 
-# --- 4. Performance Metrics ---
+# --- 3. Performance Metrics ---
 st.header("Model Performance Metrics")
 
 # Get text labels for reports
 y_test_labels = encoder.inverse_transform(y_test)
 y_pred_labels = encoder.inverse_transform(y_pred)
 
-# Calculate metrics
+# Calculate metrics (use the imported functions)
 accuracy = accuracy_score(y_test, y_pred)
 f1 = f1_score(y_test, y_pred, average='weighted')
 
@@ -95,7 +46,7 @@ col1, col2 = st.columns(2)
 col1.metric("Model Accuracy", f"{accuracy * 100:.2f}%")
 col2.metric("F1-Score (Weighted)", f"{f1:.4f}")
 
-# --- 5. Visualizations ---
+# --- 4. Visualizations ---
 st.subheader("Performance Visualization")
 
 col1, col2 = st.columns(2)
@@ -119,14 +70,11 @@ with col2:
     report_df = pd.DataFrame(report).transpose()
     st.dataframe(report_df.round(2))
 
-# --- 6. Interactive Prediction Sidebar ---
+# --- 5. Interactive Prediction Sidebar ---
 st.sidebar.header("Live Priority Prediction")
-
-# Get a few key features for the sliders. Let's pick based on importance.
 st.sidebar.write("Adjust features to predict priority:")
 
 def user_input_features():
-    # We will use the non-scaled data to get realistic min/max for sliders
     mean_texture = st.sidebar.slider('Mean Texture', 
                                      float(X_final['mean texture'].min()), 
                                      float(X_final['mean texture'].max()), 
@@ -143,12 +91,7 @@ def user_input_features():
                                         float(X_final['mean smoothness'].mean()))
     
     # Create a DataFrame from the inputs
-    # We use a 'base' row (the mean) and overwrite it with slider values
-    # This ensures the model gets all features it expects
-    base_data = base_data_mean.to_dict() # Get a dict of all features
-    
-    # Overwrite the dict with our slider values
-    # We only need to provide the features our *final model* was trained on
+    base_data = base_data_mean.to_dict()
     if 'mean texture' in base_data:
         base_data['mean texture'] = mean_texture
     if 'mean concavity' in base_data:
@@ -156,10 +99,7 @@ def user_input_features():
     if 'mean smoothness' in base_data:
         base_data['mean smoothness'] = mean_smoothness
     
-    # Create a DataFrame from the dictionary
     input_df_full = pd.DataFrame([base_data])
-    
-    # Ensure the columns match the model's training columns
     input_df = input_df_full[feature_names] 
     
     return input_df
@@ -184,30 +124,3 @@ if st.sidebar.button("Predict Priority"):
         st.sidebar.warning(f"Predicted Priority: **MEDIUM**")
     else:
         st.sidebar.success(f"Predicted Priority: **LOW**")
-sample_index = st.sidebar.slider(
-    "Select a test sample index:",
-    0, len(X_test_df) - 1, 0
-)
-
-sample_data_df = X_test_df.iloc[[sample_index]]
-
-st.sidebar.subheader("Sample Features:")
-st.sidebar.dataframe(sample_data_df)
-
-
-# --- Corrected Prediction Logic ---
-if st.sidebar.button("Run Prediction"):
-    sample_data_scaled = scaler.transform(sample_data_df)
-    prediction_proba = model.predict_proba(sample_data_scaled)[0]
-
-    # Correct mapping using model.classes_
-    predicted_label = model.classes_[np.argmax(prediction_proba)]
-
-    actual_label = y_test.iloc[sample_index]
-
-    st.sidebar.subheader("Prediction")
-    st.sidebar.write(f"**Actual:** `{actual_label}`")
-    st.sidebar.write(f"**Predicted:** `{predicted_label}`")
-
-    st.sidebar.write("Prediction Probabilities:")
-    st.sidebar.dataframe(pd.Series(prediction_proba, index=model.classes_))
